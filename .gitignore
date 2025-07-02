@@ -1,0 +1,9 @@
+/oulad/
+
+*.log
+
+__pycache__/
+
+*.tmp
+
+.ipynb_checkpoints/
