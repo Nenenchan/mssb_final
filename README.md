@@ -8,6 +8,7 @@ code/
 ├── RandomForest.py # 使用随机森林模型进行训练、预测和评估
 ├── XGBoost.py # 使用XGBoost模型进行训练、预测和评估
 ├── DBSCSN.py # 使用DBSCSN聚类方法进行训练、预测和评估
+├── Ensemble_Method.py # 使用集成方法进行训练、预测和评估
 
 oulad/  # 数据集
 
