@@ -115,8 +115,8 @@
 \paragraph{K-Means}
 K-Means 算法通过迭代优化目标函数最小化样本到簇中心的距离，来划分 $K$ 个聚类。初始阶段随机选择 $K$ 个中心点，接着在每轮迭代中进行样本分配与中心更新，直至收敛。
 
-\paragraph{层次聚类}
-层次聚类通过构建一棵聚类树（dendrogram）来逐步合并或划分样本。自底向上（凝聚型）方法从每个样本开始逐步合并最近的聚类；自顶向下（分裂型）方法则从整体开始逐步分裂为子簇，直到满足停止条件。
+\paragraph{DBSCAN}
+DBSCAN 是一种基于密度的聚类算法，通过寻找密度相连的点来划分簇并识别噪声。它依据两个参数：邻域半径$\epsilon$和最小点数$MinPts$。若某点的$\epsilon$邻域内至少有$MinPts$个点，则该点为核心点，可由此扩展出一个簇。DBSCAN能发现任意形状的簇，且无需预设簇的数量，对噪声数据具有一定鲁棒性。
 
 \subsubsection{神经网络}
 神经网络模拟生物神经元连接结构，由输入层、若干隐藏层和输出层构成。每个神经元接收来自前一层的输入，进行加权求和后通过激活函数（如 ReLU、Sigmoid）输出结果。
@@ -240,9 +240,79 @@ y_pred = (y_prob >= 0.65).astype(int)
 
 该流程简单高效，训练时间短，适合快速迭代，并可通过特征重要性分析辅助教育干预策略设计。
 
-\subsection{集成方法}
+\subsection{集成方法训练流程}
 
-\subsection{聚类算法}
+在 \texttt{Ensemble_Method.py} 中，我使用了随机森林分类器作为集成方法进行建模。随机森林通过构建多个决策树并取其多数投票结果，提升了抗过拟合能力。为了处理类别不平衡问题，在训练前使用了SMOTE（Synthetic Minority Over-sampling Technique）进行过采样，并设置了 \texttt{class_weight} 参数来增加对少数类的权重。
+模型初始化时设置了以下参数：
+
+\begin{lstlisting}[language=Python]
+rf = RandomForestClassifier(
+    n_estimators=50,  # 减少树的数量以加快训练
+    max_depth=11,     # 限制树的深度
+    min_samples_split=9,  # 增加分裂内部节点所需的最小样本数
+    min_samples_leaf=5,   # 增加叶节点所需的最小样本数
+    class_weight={0: 1, 1: 22},  # 处理不平衡数据
+    random_state=42,
+    n_jobs=-1  # 使用所有CPU核心
+)
+\end{lstlisting}
+
+训练过程如下：
+
+\begin{lstlisting}[language=Python]
+start_time = time.time()
+rf.fit(X_train, y_train)
+end_time = time.time()
+training_time = end_time - start_time
+\end{lstlisting}
+
+预测阶段，我使用了ROC曲线来寻找最优的决策阈值，并据此进行预测：
+
+\begin{lstlisting}[language=Python]
+y_pred_proba = rf.predict_proba(X_test)[:, 1]
+fpr, tpr, thresholds = roc_curve(y_test, y_pred_proba)
+optimal_threshold = thresholds[np.argmax(tpr - fpr)]
+y_pred_rf = (y_pred_proba >= optimal_threshold).astype(int)
+\end{lstlisting}
+
+最后，模型输出了准确率、分类报告和特征重要性，以便进一步分析重要行为特征。该流程简单高效，训练时间短，适合快速迭代，并可通过特征重要性分析辅助教育干预策略设计。
+
+
+
+\subsection{DBSCAN聚类算法训练流程}
+
+在 \texttt{DBSCAN.py} 中，我使用了DBSCAN聚类算法进行建模。DBSCAN是一种基于密度的聚类算法，通过寻找密度相连的点来划分簇并识别噪声。它依据两个参数：邻域半径 \texttt{eps} 和最小点数 \texttt{min_samples}。
+模型初始化时设置了以下参数：
+
+\begin{lstlisting}[language=Python]
+dbscan = DBSCAN(
+    eps=0.5,          
+    min_samples=6,    
+    metric='euclidean',
+    n_jobs=1          # 禁用并行计算以防内存错误
+)
+\end{lstlisting}
+
+训练过程如下：
+
+\begin{lstlisting}[language=Python]
+start_time = time.time()
+dbscan.fit(X_train_scaled)
+training_time = time.time() - start_time
+\end{lstlisting}
+
+预测阶段，将最大簇设为0，其他簇设为1，噪声点也归为1：
+
+\begin{lstlisting}[language=Python]
+y_pred = dbscan.fit_predict(X_test_scaled)
+if len(np.unique(y_pred)) > 1:
+    main_cluster = np.argmax(np.bincount(y_pred[y_pred != -1] + 1)) - 1
+    y_pred_mapped = np.where((y_pred == main_cluster) | (y_pred == -1), 0, 1)
+else:
+    y_pred_mapped = np.zeros_like(y_pred)
+\end{lstlisting}
+
+最后，模型输出了准确率、分类报告和混淆矩阵，以便进一步分析聚类结果。该流程能够自动发现数据中的簇结构，无需预设簇的数量，对噪声数据具有一定的鲁棒性。
 
 \subsection{神经网络}
 
@@ -367,14 +437,105 @@ XGBoost 的特征重要性相对更分散、稳定，避免了单一特征的“
 
 
 \subsection{集成方法}
+
 \subsubsection{实验输出分析}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.8\textwidth]{figures/ensemble_method_result.png}
+\caption{随机森林模型在前4周数据下的分类结果}
+\label{fig:ensemble_method_result}
+\end{figure}
+
+\begin{itemize}
+\item \textbf{整体准确率为 0.9634}，表现良好，说明模型能够较好地识别大部分学生是否会Fail。
+\item \textbf{对“非Fail”学生（类别0）识别表现优异}，precision = 0.9994，recall = 0.9621，说明模型在识别正常学生方面具有很高的准确性。
+\item \textbf{对“Fail”学生（类别1）的识别能力也很强}，recall = 0.9883，表明模型对高风险学生的捕捉能力很强。
+\item \textbf{ROC-AUC 达到 0.9679}，说明模型整体区分正负样本的能力较强，具有良好的判别性能。
+\end{itemize}
+
 \subsubsection{特征重要性分析}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.8\textwidth]{figures/ensemble_method_feature_importance.png}
+\caption{随机森林模型对早期行为特征的重要性排序}
+\label{fig:ensemble_method_feature_importance}
+\end{figure}
+
+随机森林的特征重要性相对更分散、稳定，避免了单一特征的“过拟合式依赖”，随机森林的特征重要性分析显示了以下Top 10重要特征：
+
+\begin{itemize}
+    \item \textbf{score}（0.294856）：评估分数是最关键的预测因子；
+    \item \textbf{studied\_credits}（0.077981）：学习的学分数；
+    \item \textbf{age\_band\_35-55}（0.044031）：年龄在35至55岁之间的学生；
+    \item \textbf{age\_band\_55<=}（0.040909）：年龄大于或等于55岁的学生；
+    \item \textbf{gender\_M}（0.034281）：性别为男性的学生；
+    \item \textbf{imd\_band\_50-60\%}（0.030723）：多重贫困指数在50-60\%之间的学生；
+    \item \textbf{imd\_band\_90-100\%}（0.029902）：多重贫困指数在90-100\%之间的学生；
+    \item \textbf{imd\_band\_0-10\%}（0.028922）：多重贫困指数在0-10\%之间的学生；
+    \item \textbf{imd\_band\_80-90\%}（0.028311）：多重贫困指数在80-90\%之间的学生；
+    \item \textbf{region\_South East Region}（0.027782）：来自东南地区的学生。
+\end{itemize}
+
 \subsubsection{模型局限性与改进方向}
 
+\begin{itemize}
+\item \textbf{局限性}：
+\begin{itemize}
+\item 对资源点击类型的依赖较强，跨课程泛化能力待验证；
+\item 阈值调整需根据实际业务目标精细控制；
+\item 特征过多但信息量有限，一些资源点击（如 \texttt{resource_clicks_externalquiz_4w}）重要性趋近于0，可能引入噪声。
+\end{itemize}
+
+\item \textbf{改进方向}：
+\begin{itemize}
+\item 进一步优化特征选择，减少噪声特征；
+\item 通过网格搜索等方式进一步优化超参数；
+\item 尝试其他集成方法，如XGBoost，以提高模型性能。
+\end{itemize}
+\end{itemize}
+
+
 \subsection{聚类算法}
+
 \subsubsection{实验输出分析}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.8\textwidth]{figures/dbscan_result.png}
+\caption{DBSCAN聚类结果}
+\label{fig:dbscan_result}
+\end{figure}
+
+\begin{itemize}
+\item \textbf{准确率为 0.8410}，表明DBSCAN聚类在识别学业困难学生方面具有一定的效果。
+\item \textbf{噪声点比例为 1.17\%}，说明大部分样本被成功聚类。
+\item \textbf{对“非Fail”学生（类别0）识别性能优异}，precision = 0.9801，recall = 0.8505，f1-score 达到 0.9107，能够准确识别大多数正常学习状态的学生。
+\item \textbf{对“Fail”学生（类别1）的识别能力较弱}，recall = 0.6448，表明模型对高风险学生的捕捉能力有待提高。
+\end{itemize}
+
 \subsubsection{特征重要性分析}
+
+由于DBSCAN是一种无监督学习方法，它不直接提供特征重要性分析。然而，可以通过分析聚类结果与特征之间的关系来间接了解特征的重要性。
+
 \subsubsection{模型局限性与改进方向}
+
+\begin{itemize}
+\item \textbf{局限性}：
+\begin{itemize}
+\item DBSCAN对参数 \texttt{eps} 和 \texttt{min_samples} 较为敏感，需要根据具体数据集进行调整；
+\item 对噪声数据和异常值较为敏感，可能影响聚类结果；
+\item 无法直接提供特征重要性分析，需要通过其他方法间接分析。
+\end{itemize}
+
+\item \textbf{改进方向}：
+\begin{itemize}
+\item 尝试不同的参数组合，优化 \texttt{eps} 和 \texttt{min_samples} 的选择；
+\item 结合其他聚类算法，如K-Means或层次聚类，进行比较和集成；
+\item 使用可视化工具，如t-SNE或PCA，来辅助分析聚类结果与特征之间的关系。
+\end{itemize}
+\end{itemize}
 
 \subsection{神经网络}
 \subsubsection{实验输出分析}
