@@ -1,6 +1,7 @@
 %!TeX program = xelatex
 \documentclass{SYSUReport}
 
+\usepackage{enumitem}  
 \usepackage{caption}
 \usepackage{subcaption}
 \usepackage{hyperref}
@@ -146,7 +147,6 @@ RNN 适用于序列数据建模。其隐层状态在时间步之间传递，能�
     \item 注册信息（注册时间、持续天数）
 \end{itemize}
 
-
 \subsubsection{数据预处理}
 \begin{itemize}
     \item 仅保留课程代码为 \texttt{FFF}，呈现时间为 \texttt{2013J} 的数据；
@@ -164,7 +164,106 @@ RNN 适用于序列数据建模。其隐层状态在时间步之间传递，能�
     \item 特征重要性分析
 \end{itemize}
 
-\subsection{线性分类器训练流程}
+\subsection{线性分类器（逻辑回归）训练流程}
+在训练逻辑回归模型之前，我们对原始 OULAD 多表数据按照以下步骤进行清洗与特征构造：
+
+\begin{enumerate}[1.]
+  \item \textbf{选取目标课期}  
+    仅保留 \texttt{code\_module="FFF"} 且 \texttt{code\_presentation="2013J"} 的所有表中记录，聚焦同一门课程-展示期。
+
+  \item \textbf{VLE 行为数据聚合}  
+    \begin{itemize}
+      \item 将 \texttt{studentVle.csv} 与 \texttt{vle.csv} 按 \texttt{id\_site} 合并，获取每条点击的 \texttt{activity\_type}；  
+      \item 截断至前 28 天（4 周）内的记录；  
+      \item 按 \texttt{id\_student} 与 \texttt{activity\_type} 分组，对 \texttt{sum\_click} 求和，得到每个学生各类活动的总点击特征。
+    \end{itemize}
+
+  \item \textbf{测验与考试表现聚合}  
+    \begin{itemize}
+      \item 从 \texttt{assessments.csv} 中筛选 FFF-2013J 的考核元信息，再与 \texttt{studentAssessment.csv} 合并；  
+      \item 截断至提交日期 \(\le28\) 天的记录；  
+      \item 按 \texttt{id\_student} 与 \texttt{assessment\_type} 分组，分别计算平均得分（\texttt{score\_mean}）与提交次数（\texttt{attempts}），并将多级索引扁平化为独立列（如 \texttt{score\_mean\_TMA}、\texttt{attempts\_Exam}）。
+    \end{itemize}
+
+  \item \textbf{注册信息处理}  
+    \begin{itemize}
+      \item 从 \texttt{studentRegistration.csv} 提取是否退课特征：  
+        \(\texttt{has\_withdrawn}=1\) 若 \texttt{date\_unregistration} 非空，否则 0；  
+      \item （可选）可额外构造“注册至开课天数”、“持续学习天数”等时长特征。
+    \end{itemize}
+
+  \item \textbf{人口统计与标签构造}  
+    \begin{itemize}
+      \item 从 \texttt{studentInfo.csv} 获取性别、年龄段、最高学历、IMD 分级、已学学分、既往尝试次数、残疾申报等特征；  
+      \item 根据 \texttt{final\_result} 构建二分类标签：Fail/Withdrawn → 1，Pass/Distinction → 0。
+    \end{itemize}
+
+  \item \textbf{主表合并}  
+    以 \texttt{id\_student} 为主键，将上述各特征表外连接合并，确保每个学生占一行。
+
+  \item \textbf{缺失值填充与类型统一}  
+    \begin{itemize}
+      \item 数值特征缺失填 0；  
+      \item 类别特征缺失填 \texttt{"missing"}。
+    \end{itemize}
+
+  \item \textbf{划分特征矩阵与标签向量}  
+    将合并后数据中剔除 \texttt{id\_student} 与 \texttt{label} 列，分别得到特征矩阵 \(X\) 和标签向量 \(y\)。
+
+  \item \textbf{训练/测试集划分}  
+    使用 \texttt{train\_test\_split(..., stratify=y)} 按 70:30 分层划分训练集与测试集。
+
+  \item \textbf{Sklearn 预处理流水线}  
+    \begin{itemize}
+      \item 数值特征：\texttt{StandardScaler} 标准化；  
+      \item 类别特征：\texttt{OneHotEncoder(handle\_unknown='ignore')} 编码；  
+      \item 将预处理与 \texttt{LogisticRegression} 封装到 \texttt{Pipeline} 中。
+    \end{itemize}
+
+  \item \textbf{MLP 额外准备}  
+    对训练/测试数据调用相同的 \texttt{ColumnTransformer.transform()}，并转为 \texttt{float32} NumPy 数组后，构造 PyTorch 的 \texttt{TensorDataset} 与 \texttt{DataLoader} 进行训练。
+\end{enumerate}
+
+在 \texttt{code\logistic_and_MLP.ipynb} 中，我们先从数据处理模块加载预处理好的特征矩阵 \(X\) 和标签向量 \(y\)，然后按 7:3 划分训练集和测试集，使用 scikit-learn 的 \texttt{Pipeline} 将标准化、类别编码和逻辑回归组合在一起，训练并评估模型。为应对类别不平衡，设置了 \texttt{class\_weight='balanced'}。
+
+\begin{lstlisting}[language=Python]
+num_feats = X_train.select_dtypes(include='number').columns.tolist()
+cat_feats = [c for c in feature_cols if c in cat_cols]
+
+pre = ColumnTransformer([
+    ('num', StandardScaler(), num_feats),
+    ('cat', OneHotEncoder(handle_unknown='ignore'), cat_feats)
+])
+pipe_lr = Pipeline([
+    ('pre', pre),
+    ('clf', LogisticRegression(
+        max_iter=1000,
+        class_weight='balanced',
+        random_state=42))
+])
+
+pipe_lr.fit(X_train, y_train)
+y_pred_lr  = pipe_lr.predict(X_test)
+y_proba_lr = pipe_lr.predict_proba(X_test)[:,1]
+
+print("=== 逻辑回归 评估 (FFF-2013J) ===")
+print(classification_report(y_test, y_pred_lr, digits=4))
+print("ROC-AUC:", roc_auc_score(y_test, y_proba_lr))
+
+ohe = pipe_lr.named_steps['pre'].named_transformers_['cat']
+ohe_names = ohe.get_feature_names_out(cat_feats)
+all_feats = np.concatenate([num_feats, ohe_names])
+coefs     = pipe_lr.named_steps['clf'].coef_.ravel()
+imp_lr = pd.DataFrame({
+    'feature': all_feats,
+    'coef': coefs,
+    'abs_coef': np.abs(coefs)
+}).sort_values('abs_coef', ascending=False).reset_index(drop=True)
+
+print("\n逻辑回归 Top 10 特征 (coef)：")
+print(imp_lr.head(10)[['feature','coef']])
+\end{lstlisting}
+
 
 \subsection{非线性分类器（XGBoost）训练流程}
 
@@ -314,7 +413,78 @@ else:
 
 最后，模型输出了准确率、分类报告和混淆矩阵，以便进一步分析聚类结果。该流程能够自动发现数据中的簇结构，无需预设簇的数量，对噪声数据具有一定的鲁棒性。
 
-\subsection{神经网络}
+\subsection{神经网络（MLP）训练流程}
+在 \texttt{train\_mlp.py} 中，使用 PyTorch 定义一个三层的多层感知机（MLP），输入维度等于预处理后特征数。训练时采用 Adam 优化器和交叉熵损失函数，批大小 64，训练 30 个 epoch。训练完毕后，对测试集做前向推理并计算分类报告与 ROC-AUC。
+\begin{lstlisting}[language=Python]
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import TensorDataset, DataLoader
+from data_processing import load_and_preprocess  # 返回 X_train_np,X_test_np,y_train,y_test
+from sklearn.metrics import classification_report, roc_auc_score
+
+X_train, X_test, y_train, y_test = load_and_preprocess()
+
+train_ds = TensorDataset(
+    torch.from_numpy(X_train), 
+    torch.from_numpy(y_train)
+)
+test_ds  = TensorDataset(
+    torch.from_numpy(X_test),
+    torch.from_numpy(y_test)
+)
+train_ld = DataLoader(train_ds, batch_size=64, shuffle=True)
+test_ld  = DataLoader(test_ds, batch_size=64, shuffle=False)
+
+class MLP(nn.Module):
+    def __init__(self, in_dim):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, 128),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(64, 2)
+        )
+    def forward(self, x):
+        return self.net(x)
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model = MLP(X_train.shape[1]).to(device)
+optimizer = optim.Adam(model.parameters(), lr=1e-3)
+criterion = nn.CrossEntropyLoss()
+
+for epoch in range(1, 31):
+    model.train()
+    total_loss = 0
+    for xb, yb in train_ld:
+        xb, yb = xb.to(device), yb.to(device)
+        optimizer.zero_grad()
+        logits = model(xb)
+        loss = criterion(logits, yb)
+        loss.backward()
+        optimizer.step()
+        total_loss += loss.item() * xb.size(0)
+    print(f"Epoch {epoch}/30, Loss: {total_loss/len(train_ds):.4f}")
+
+model.eval()
+all_preds, all_probs, all_trues = [], [], []
+with torch.no_grad():
+    for xb, yb in test_ld:
+        xb = xb.to(device)
+        logits = model(xb)
+        probs = torch.softmax(logits, dim=1)[:,1].cpu().numpy()
+        preds = logits.argmax(dim=1).cpu().numpy()
+        all_probs.extend(probs)
+        all_preds.extend(preds)
+        all_trues.extend(yb.numpy())
+
+print("\n=== MLP 评估 ===")
+print(classification_report(all_trues, all_preds, digits=4))
+print("ROC-AUC:", roc_auc_score(all_trues, all_probs))
+\end{lstlisting}
 
 \section{实验结果}
 % -------------------------------------
@@ -323,8 +493,73 @@ else:
 
 \subsection{线性分类器}
 \subsubsection{实验输出分析}
+在仅使用 FFF-2013J 数据、前四周行为特征的条件下，逻辑回归模型在测试集上的表现如下：
+
+\begin{verbatim}
+=== 逻辑回归 评估 (FFF-2013J) ===
+              precision    recall  f1-score   support
+
+           0     0.7628    0.9088    0.8294       329
+           1     0.8976    0.7388    0.8105       356
+
+    accuracy                         0.8204       685
+   macro avg     0.8302    0.8238    0.8199       685
+weighted avg     0.8328    0.8204    0.8196       685
+
+ROC-AUC: 0.9014463303848912
+\end{verbatim}
+
+\begin{itemize}
+  \item \textbf{准确率 (82.04\%)}：测试集 685 名学生中，约 82\% 的预测正确。
+  \item \textbf{少数类（Fail/Withdrawn）}  
+    \begin{itemize}
+      \item Precision = 0.8976：被预测为“困难”学生中，约 90\% 真实确实困难；  
+      \item Recall = 0.7388：真实困难学生中，模型识别出约 74\%；  
+      \item F1-score = 0.8105。  
+    \end{itemize}
+  \item \textbf{多数类（Pass）}  
+    \begin{itemize}
+      \item Precision = 0.7628；Recall = 0.9088，说明对“正常”学生的漏判率很低。  
+    \end{itemize}
+  \item \textbf{ROC-AUC = 0.9014}：大于 0.9，表明模型的整体判别能力非常优秀。
+\end{itemize}
+
 \subsubsection{特征重要性分析}
+基于逻辑回归系数绝对值排序，模型最依赖的前十个特征如下：
+
+\begin{table}[htbp]
+\centering
+\begin{tabular}{lp{6cm}r}
+\hline
+排名 & 特征名 & 系数 \\
+\hline
+1 & \texttt{has\_withdrawn}                                &  3.099431 \\
+2 & \texttt{score\_mean\_TMA}                              & -1.282397 \\
+3 & \texttt{highest\_education\_Post Graduate Qualification} &  0.889866 \\
+4 & \texttt{age\_band\_55<=}                                &  0.693176 \\
+5 & \texttt{imd\_band\_10-20\%}                             &  0.614567 \\
+6 & \texttt{highest\_education\_A Level or Equivalent}      & -0.590165 \\
+7 & \texttt{highest\_education\_No Formal quals}            & -0.569961 \\
+8 & \texttt{imd\_band\_missing}                             & -0.547830 \\
+9 & \texttt{imd\_band\_0-10\%}                              &  0.499858 \\
+10 & \texttt{subpage}                                       &  0.444917 \\
+\hline
+\end{tabular}
+\caption{逻辑回归 Top 10 特征及其系数（按绝对值排序）}
+\end{table}
+
+\begin{itemize}
+  \item \texttt{has\_withdrawn}（是否退课，系数最大）显著提高了风险预测；  
+  \item \texttt{score\_mean\_TMA}（TMA 平均分）负系数强烈表明早期测验分数越低，风险越大；  
+  \item 剩余特征（如最高学历、年龄段、IMD 分级和子页面访问量 \texttt{subpage}）也在一定程度上影响预测。
+\end{itemize}
+
 \subsubsection{模型局限性与改进方向}
+\begin{itemize}
+  \item \textbf{优点}：可解释性强，输出的系数直接反映特征正负影响；训练与部署都非常高效。  
+  \item \textbf{缺点}：只能捕捉线性关系，若存在复杂的特征交互或时间依赖，则表现受限。  
+  \item \textbf{改进建议}：可加入多项式或交叉项、尝试树/集成模型；也可对“退课”做更细致的时间窗口特征。  
+\end{itemize}
 
 \subsection{非线性分类器(XGBoost)}
 \subsubsection{实验输出分析}
@@ -539,8 +774,74 @@ XGBoost 的特征重要性相对更分散、稳定，避免了单一特征的“
 
 \subsection{神经网络}
 \subsubsection{实验输出分析}
-\subsubsection{特征重要性分析}
+相同训练／测试划分下，多层感知机（MLP，结构为 128–64 隐单元）经过 30 epoch 训练后，性能如下：
+
+\begin{verbatim}
+=== MLP 评估 (FFF-2013J) ===
+              precision    recall  f1-score   support
+
+           0     0.7768    0.8359    0.8053       329
+           1     0.8369    0.7781    0.8064       356
+
+    accuracy                         0.8058       685
+   macro avg     0.8068    0.8070    0.8058       685
+weighted avg     0.8080    0.8058    0.8059       685
+
+ROC-AUC: 0.8959
+\end{verbatim}
+
+\begin{itemize}
+  \item \textbf{准确率 (80.58\%)} 与之前保持一致；  
+  \item \textbf{少数类（Fail/Withdrawn）}  
+    \begin{itemize}
+      \item Precision = 0.8369：被预测为“困难”学生中，约 83.7\% 真实困难；  
+      \item Recall = 0.7781：真实困难学生中，模型识别出约 77.8\%；  
+      \item F1-score = 0.8064。  
+    \end{itemize}
+  \item \textbf{多数类（Pass）}  
+    \begin{itemize}
+      \item Precision = 0.7768；Recall = 0.8359。  
+    \end{itemize}
+  \item \textbf{ROC-AUC = 0.8959}：略低于逻辑回归（0.9014），但仍然接近 0.9。
+\end{itemize}
+
+\subsubsection{特征重要性分析（置换重要性）}
+对 MLP 使用 \textbf{Permutation Importance}（基于 ROC-AUC）进行评估，前十名特征及其重要性均值如下：
+
+\begin{table}[htbp]
+\centering
+\begin{tabular}{lp{6cm}r}
+\hline
+排名 & 特征名 & Importance (mean) \\
+\hline
+1  & \texttt{has\_withdrawn}         & 0.2187 \\
+2  & \texttt{score\_mean\_TMA}        & 0.0436 \\
+3  & \texttt{ouwiki}                 & 0.0152 \\
+4  & \texttt{quiz}                   & 0.0090 \\
+5  & \texttt{num\_of\_prev\_attempts}& 0.0087 \\
+6  & \texttt{highest\_education}     & 0.0076 \\
+7  & \texttt{forumng}                & 0.0075 \\
+8  & \texttt{homepage}               & 0.0075 \\
+9  & \texttt{attempts\_TMA}          & 0.0065 \\
+10 & \texttt{url}                    & 0.0061 \\
+\hline
+\end{tabular}
+\caption{MLP Top 10 特征（基于置换重要性）}
+\end{table}
+
+\begin{itemize}
+  \item \texttt{has\_withdrawn} 仍然是最关键的特征；  
+  \item \texttt{score\_mean\_TMA}、\texttt{num\_of\_prev\_attempts} 等早期测验相关特征依旧位于前列；  
+  \item 新增 \texttt{quiz}、\texttt{forumng} 和 \texttt{url} 等 VLE 类型，对模型也有一定贡献。
+\end{itemize}
+
 \subsubsection{模型局限性与改进方向}
+\begin{itemize}
+  \item \textbf{优点}：在“困难学生”召回方面表现提升，能捕捉更多非线性行为；  
+  \item \textbf{缺点}：整体 AUC 略低于逻辑回归，且训练与调参成本更高；  
+  \item \textbf{改进建议}：可尝试融合逻辑回归与 MLP 的预测（stacking），或使用更丰富的序列模型来进一步提高性能。
+\end{itemize}
+
 
 
 
